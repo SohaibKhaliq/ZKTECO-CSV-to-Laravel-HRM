@@ -8,3 +8,6 @@ env
 __pycache__/
 *.pyc
 env/*
+localhost
+*.local
+localhost/*
