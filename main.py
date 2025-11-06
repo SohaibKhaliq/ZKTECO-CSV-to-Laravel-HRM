@@ -17,12 +17,14 @@ DEVICE_IP = os.getenv('DEVICE_IP', '10.5.8.3')
 DEVICE_PORT = int(os.getenv('DEVICE_PORT', '4370'))
 AUTH_MIDDLEWARE = os.getenv('AUTH_MIDDLEWARE')
 HR_API_BASE_URL = os.getenv('HR_API_BASE_URL', 'https://hrm.zentacode.com/api')
-CHECK_IN_ENDPOINT = os.getenv('CHECK_IN_ENDPOINT', f'{HR_API_BASE_URL}/check-in')
-CHECK_OUT_ENDPOINT = os.getenv('CHECK_OUT_ENDPOINT', f'{HR_API_BASE_URL}/check-out')
 CSV_FILE = os.getenv('CSV_FILE', 'Timeset Attendance.csv')
 TIMEZONE = os.getenv('TIMEZONE', 'Asia/Karachi')
 DEFAULT_API_DELAY = float(os.getenv('DEFAULT_API_DELAY', '1.0'))
 MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '3'))
+
+# Endpoint configuration - defaults use HR_API_BASE_URL
+CHECK_IN_ENDPOINT = os.getenv('CHECK_IN_ENDPOINT') or f'{HR_API_BASE_URL}/check-in'
+CHECK_OUT_ENDPOINT = os.getenv('CHECK_OUT_ENDPOINT') or f'{HR_API_BASE_URL}/check-out'
 
 # Validate critical configuration
 if not AUTH_MIDDLEWARE:
