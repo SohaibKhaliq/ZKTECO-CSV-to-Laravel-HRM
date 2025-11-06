@@ -6,14 +6,30 @@ import time
 import pytz
 import backoff
 import csv
+import sys
+from dotenv import load_dotenv
 
-# Configuration
-DEVICE_IP = '10.5.8.3'
-DEVICE_PORT = 4370
-AUTH_MIDDLEWARE = '00:17:61:12:ef:ac'
-HR_API_ENDPOINT = f"https://hrm.zentacode.com/api/get-last-attendance?auth_middleware={AUTH_MIDDLEWARE}"
-CHECK_IN_ENDPOINT = "https://hrm.zentacode.com/api/check-in"
-CHECK_OUT_ENDPOINT = "https://hrm.zentacode.com/api/check-out"
+# Load environment variables
+load_dotenv()
+
+# Configuration with environment variable support and validation
+DEVICE_IP = os.getenv('DEVICE_IP', '10.5.8.3')
+DEVICE_PORT = int(os.getenv('DEVICE_PORT', '4370'))
+AUTH_MIDDLEWARE = os.getenv('AUTH_MIDDLEWARE')
+HR_API_BASE_URL = os.getenv('HR_API_BASE_URL', 'https://hrm.zentacode.com/api')
+CHECK_IN_ENDPOINT = os.getenv('CHECK_IN_ENDPOINT', f'{HR_API_BASE_URL}/check-in')
+CHECK_OUT_ENDPOINT = os.getenv('CHECK_OUT_ENDPOINT', f'{HR_API_BASE_URL}/check-out')
+CSV_FILE = os.getenv('CSV_FILE', 'Timeset Attendance.csv')
+TIMEZONE = os.getenv('TIMEZONE', 'Asia/Karachi')
+DEFAULT_API_DELAY = float(os.getenv('DEFAULT_API_DELAY', '1.0'))
+MAX_RETRY_ATTEMPTS = int(os.getenv('MAX_RETRY_ATTEMPTS', '3'))
+
+# Validate critical configuration
+if not AUTH_MIDDLEWARE:
+    print("❌ ERROR: AUTH_MIDDLEWARE not configured. Please set it in .env file")
+    sys.exit(1)
+
+HR_API_ENDPOINT = f"{HR_API_BASE_URL}/get-last-attendance?auth_middleware={AUTH_MIDDLEWARE}"
 
 # Output files
 ALL_ATTENDANCE_FILE = "all_attendance_records.json"
@@ -24,6 +40,33 @@ FILTERED_ATTENDANCE_FILE = "filtered_attendance_by_date.json"
 API_CALL_LOGS_FILE = "api_call_logs.json"
 PROCESSED_DATES_FILE = "processed_dates.json"
 CSV_FILE = "Timeset Attendance.csv"
+
+def validate_csv_file():
+    """
+    Validates that the CSV file exists and is readable.
+    Returns True if valid, False otherwise.
+    """
+    if not os.path.exists(CSV_FILE):
+        print(f"❌ ERROR: CSV file '{CSV_FILE}' not found")
+        return False
+    
+    if not os.access(CSV_FILE, os.R_OK):
+        print(f"❌ ERROR: CSV file '{CSV_FILE}' is not readable")
+        return False
+    
+    try:
+        with open(CSV_FILE, 'r') as f:
+            # Try to read first line to validate it's a valid file
+            first_line = f.readline()
+            if not first_line:
+                print(f"❌ ERROR: CSV file '{CSV_FILE}' is empty")
+                return False
+    except Exception as e:
+        print(f"❌ ERROR: Cannot read CSV file '{CSV_FILE}': {str(e)}")
+        return False
+    
+    print(f"✅ CSV file '{CSV_FILE}' validated successfully")
+    return True
 
 def append_to_json_file(filepath, new_data):
     """
@@ -74,7 +117,7 @@ def update_processed_dates(date_str, status, success_count, failure_count):
         "status": status,
         "success_count": success_count,
         "failure_count": failure_count,
-        "processed_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+        "processed_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
     }
 
     try:
@@ -108,7 +151,7 @@ def log_to_file(filepath, operation, level, message, additional_data):
         "level": level,
         "message": message,
         "additional_data": additional_data,
-        "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+        "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
     }
     append_to_json_file(filepath, log_entry)
     print(f"[{level.upper()}] {operation}: {message}")
@@ -141,7 +184,7 @@ def fetch_all_attendance_from_csv():
                     "status": status,
                     "punch": punch,
                     "method": method,
-                    "fetched_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "fetched_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 all_records.append(record)
 
@@ -185,7 +228,7 @@ def fetch_last_attendance_from_csv():
                     "status": status,
                     "punch": punch,
                     "method": method,
-                    "fetched_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "fetched_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 all_records.append(record)
 
@@ -215,7 +258,7 @@ def get_from_hr_api():
     Returns the in_date for reference.
     """
     try:
-        response = requests.get(HR_API_ENDPOINT)
+        response = requests.get(HR_API_ENDPOINT, timeout=30)
         response.raise_for_status()
         json_data = response.json()
 
@@ -234,7 +277,7 @@ def get_from_hr_api():
 
         record = {
             "data": json_data,
-            "fetched_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+            "fetched_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
         }
 
         with open(API_OUTPUT_FILE, "w") as f:
@@ -243,6 +286,12 @@ def get_from_hr_api():
         print(json.dumps(record, indent=4))
         return in_date
 
+    except requests.exceptions.Timeout:
+        print("❌ Request timeout while accessing HR API")
+        return None
+    except requests.exceptions.ConnectionError:
+        print("❌ Connection error while accessing HR API")
+        return None
     except requests.exceptions.HTTPError as http_err:
         print("❌ HTTP Error:", http_err)
         return None
@@ -282,7 +331,7 @@ def fetch_csv_attendance_by_date(target_date):
                     "status": status,
                     "punch": punch,
                     "method": method,
-                    "fetched_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "fetched_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 })
 
         if not filtered:
@@ -376,7 +425,7 @@ def check_existing_checkin(user_id, date):
     operation = "check_existing_checkin"
     try:
         url = f"{HR_API_ENDPOINT}&user_id={user_id}&date={date}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
         data = response.json()
         has_checkin = bool(data.get("data") and data["data"].get("in_date") == date and data["data"].get("in_time"))
@@ -388,6 +437,15 @@ def check_existing_checkin(user_id, date):
             {"user_id": user_id, "date": date, "has_checkin": has_checkin, "response": data}
         )
         return has_checkin
+    except requests.exceptions.Timeout:
+        log_to_file(
+            API_CALL_LOGS_FILE,
+            operation,
+            "error",
+            f"Timeout checking existing check-in for user_id {user_id} on {date}",
+            {"user_id": user_id, "date": date, "error": "Request timeout"}
+        )
+        return False
     except requests.exceptions.HTTPError as http_err:
         try:
             error_data = http_err.response.json() if http_err.response else {"error": str(http_err)}
@@ -412,22 +470,33 @@ def check_existing_checkin(user_id, date):
         )
         return False
 
-@backoff.on_exception(backoff.expo, requests.exceptions.RequestException, max_tries=3)
+@backoff.on_exception(
+    backoff.expo,
+    requests.exceptions.RequestException,
+    max_tries=MAX_RETRY_ATTEMPTS,
+    max_time=60
+)
 def make_api_call(endpoint, payload, operation, user_id, timestamp, punch_type):
     """
     Makes an API call with retry logic and returns the response.
     Returns response and delay (from Retry-After header or default).
     """
     try:
-        response = requests.post(endpoint, json=payload)
+        response = requests.post(endpoint, json=payload, timeout=30)
         response.raise_for_status()
         retry_after = response.headers.get("Retry-After")
-        delay = float(retry_after) if retry_after and retry_after.isdigit() else 1.0
+        delay = float(retry_after) if retry_after and retry_after.isdigit() else DEFAULT_API_DELAY
         return response, delay
     except requests.exceptions.HTTPError as http_err:
         retry_after = http_err.response.headers.get("Retry-After") if http_err.response else None
-        delay = float(retry_after) if retry_after and retry_after.isdigit() else 1.0
+        delay = float(retry_after) if retry_after and retry_after.isdigit() else DEFAULT_API_DELAY
         raise requests.exceptions.HTTPError(f"{http_err}", response=http_err.response) from None
+    except requests.exceptions.Timeout:
+        print(f"⚠️ Request timeout for {operation} (user_id: {user_id})")
+        raise
+    except requests.exceptions.ConnectionError:
+        print(f"⚠️ Connection error for {operation} (user_id: {user_id})")
+        raise
 
 def process_attendance_api_calls(date_str):
     """
@@ -522,17 +591,6 @@ def process_attendance_api_calls(date_str):
                     )
                     continue
 
-                # if check_existing_checkin(user_id, date):
-                #     log_to_file(
-                #         API_CALL_LOGS_FILE,
-                #         operation,
-                #         "warning",
-                #         f"Existing check-in found in HR system for user_id {user_id} on {date}. Skipping.",
-                #         {"user_id": user_id, "date": date}
-                #     )
-                #     processed_check_ins.add(check_in_key)
-                #     continue
-
                 processed_check_ins.add(check_in_key)
                 payload = {
                     "user_id": user_id,
@@ -556,7 +614,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload,
                     "response_status": response.status_code,
                     "response_data": response_data,
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -638,7 +696,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload,
                     "response_status": status_code,
                     "response_data": response_data,
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -661,7 +719,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload if 'payload' in locals() else None,
                     "response_status": None,
                     "response_data": {"error": f"Invalid data: {str(ve)}"},
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -684,7 +742,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload if 'payload' in locals() else None,
                     "response_status": None,
                     "response_data": {"error": str(e)},
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -746,7 +804,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload,
                     "response_status": response.status_code,
                     "response_data": response_data,
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -828,7 +886,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload,
                     "response_status": status_code,
                     "response_data": response_data,
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -851,7 +909,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload if 'payload' in locals() else None,
                     "response_status": None,
                     "response_data": {"error": f"Invalid data: {str(ve)}"},
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -874,7 +932,7 @@ def process_attendance_api_calls(date_str):
                     "request_payload": payload if 'payload' in locals() else None,
                     "response_status": None,
                     "response_data": {"error": str(e)},
-                    "logged_at": datetime.now(pytz.timezone("Asia/Karachi")).isoformat()
+                    "logged_at": datetime.now(pytz.timezone(TIMEZONE)).isoformat()
                 }
                 log_entries.append(log_entry)
                 log_to_file(
@@ -919,6 +977,18 @@ def process_attendance_api_calls(date_str):
         return success_count, failure_count
 
 if __name__ == "__main__":
+    # Validate CSV file exists before proceeding
+    if not validate_csv_file():
+        print("❌ Cannot proceed without valid CSV file. Exiting.")
+        sys.exit(1)
+    
+    print(f"✅ Configuration loaded:")
+    print(f"   - Device IP: {DEVICE_IP}")
+    print(f"   - CSV File: {CSV_FILE}")
+    print(f"   - Timezone: {TIMEZONE}")
+    print(f"   - API Delay: {DEFAULT_API_DELAY}s")
+    print(f"   - Max Retry Attempts: {MAX_RETRY_ATTEMPTS}")
+    
     # Truncate specified files
     files_to_truncate = ["last_attendance_from_device.json", "last_attendance_from_api.json", "filtered_attendance_by_date.json"]
     for file_path in files_to_truncate:
@@ -930,10 +1000,25 @@ if __name__ == "__main__":
             print(f"❌ Error truncating {file_path}: {str(e)}")
 
     # Initial fetch of attendance data
-    fetch_all_attendance_from_csv()
-    fetch_last_attendance_from_csv()
+    print("\n🔄 Fetching attendance data...")
+    all_records = fetch_all_attendance_from_csv()
+    if all_records is None:
+        print("❌ Failed to fetch attendance records from CSV. Exiting.")
+        sys.exit(1)
+    
+    last_record = fetch_last_attendance_from_csv()
+    if last_record is None:
+        print("❌ Failed to fetch last attendance record. Exiting.")
+        sys.exit(1)
+    
     in_date = get_from_hr_api()
-    print(f"Fetched in_date from API: {in_date}")
+    if in_date is None:
+        print("⚠️ Failed to fetch in_date from HR API. Will attempt to proceed with local data.")
+        # Try to use a default starting date if API fails
+        in_date = (datetime.now(pytz.timezone(TIMEZONE)) - timedelta(days=7)).strftime("%Y-%m-%d")
+        print(f"Using default start date: {in_date}")
+    
+    print(f"✅ Fetched in_date from API: {in_date}")
 
     # Read timestamps and compare dates
     try:
